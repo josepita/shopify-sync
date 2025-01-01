@@ -1,0 +1,75 @@
+.
+├── arbol.txt
+├── config
+│   └── config.py
+├── data
+│   ├── csv_archive
+│   │   ├── 20241229
+│   │   │   └── catalogo_20241229_112119.csv
+│   │   ├── 20241230
+│   │   │   └── catalogo_20241230_201315.csv
+│   │   ├── 20241231
+│   │   │   ├── catalogo_20241231_063505.csv
+│   │   │   ├── catalogo_20241231_063700.csv
+│   │   │   ├── catalogo_20241231_064203.csv
+│   │   │   ├── catalogo_20241231_065230.csv
+│   │   │   ├── catalogo_20241231_083610.csv
+│   │   │   └── catalogo_20241231_083658.csv
+│   │   ├── catalogo_20241229.csv
+│   │   └── last_successful.csv
+│   ├── current.csv
+│   ├── previous.csv
+│   ├── raw_content
+│   └── temp.xlsx
+├── doc
+│   ├── estructura.png
+│   └── requisitos-iniciales-claude.md
+├── logs
+├── requirements.txt
+├── src
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   └── __init__.cpython-38.pyc
+│   ├── csv_processor
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-38.pyc
+│   │   │   └── processor.cpython-38.pyc
+│   │   └── processor.py
+│   ├── database
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-38.pyc
+│   │   │   ├── connection.cpython-38.pyc
+│   │   │   ├── models.cpython-38.pyc
+│   │   │   └── queue_manager.cpython-38.pyc
+│   │   ├── connection.py
+│   │   ├── models.py
+│   │   └── queue_manager.py
+│   ├── shopify
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── __init__.cpython-38.pyc
+│   │   │   └── api.cpython-38.pyc
+│   │   └── api.py
+│   └── utils
+│       ├── __init__.py
+│       ├── __pycache__
+│       │   ├── __init__.cpython-38.pyc
+│       │   ├── email.cpython-38.pyc
+│       │   └── file_manager.cpython-38.pyc
+│       ├── email.py
+│       └── file_manager.py
+├── tests
+│   ├── __init__.py
+│   ├── data
+│   │   └── csv_archive
+│   ├── test_connection.py
+│   ├── test_csv_processor.py
+│   ├── test_email.py
+│   ├── test_queue_manager.py
+│   └── test_shopify_api.py
+└── tools
+    └── update_variant_mappings.py
+
+22 directories, 50 files
