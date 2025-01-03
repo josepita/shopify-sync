@@ -23,18 +23,19 @@ El sistema descarga diariamente un catálogo en formato CSV/HTML desde el provee
 ## Estructura del proyecto
 
 .
-├── config/               # Configuración del sistema
-├── data/                # Datos y archivos CSV
-│   └── csv_archive/     # Histórico de catálogos  
-├── logs/                # Logs del sistema
+├── config/                                      # Configuración del sistema
+├── data/                                        # Datos y archivos CSV
+│   └── csv_archive/                             # Histórico de catálogos  
+├── logs/                                        # Logs del sistema
 ├── src/
-│   ├── csv_processor/   # Procesamiento de CSV
-│   ├── database/        # Conexión y modelos BD
-│   ├── shopify/         # Cliente API Shopify
-│   ├── sync/           # Lógica de sincronización
-│   └── utils/          # Utilidades (email, archivos)
-├── tests/              # Tests del sistema
-└── tools/              # Scripts de utilidad
+│   ├── csv_processor/                          # Procesamiento de CSV
+│   ├── database/                               # Conexión y modelos BD
+│   ├── shopify/                                # Cliente API Shopify
+│   ├── sync/                                   # Lógica de sincronización
+│   └── utils/                                  # Utilidades (email, archivos)
+├── tests/                                      # Tests del sistema
+└── tools/                                      # Scripts de utilidad
+    └── update_variant_mappings.py              # Permite forzar la sincronización del mapeo de variantes con referencias del CSV
 
 ## Base de datos
 

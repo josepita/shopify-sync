@@ -275,22 +275,30 @@ class ShopifyAPI:
             return False
 
 
-    def bulk_price_update(self, variant_updates: List[Dict[str, Any]]) -> Dict[str, bool]:
+    def bulk_price_update(self, variant_updates: List[Dict[str, Any]], margin: float = 2.5) -> Dict[str, bool]:
         """
-        Actualiza precios de múltiples variantes en una sola operación
+        Actualiza precios y costes de múltiples variantes en una sola operación
+        Args:
+            variant_updates: Lista de diccionarios con product_id, variant_id y cost
+            margin: Margen a aplicar para calcular el precio (por defecto 2.5)
         """
         query = """
         mutation bulkUpdateVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-            productVariants {
-              id
-              price
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                productVariants {
+                    id
+                    price
+                    inventoryItem {
+                        unitCost {
+                            amount
+                        }
+                    }
+                }
+                userErrors {
+                    field
+                    message
+                }
             }
-            userErrors {
-              field
-              message
-            }
-          }
         }
         """
         
@@ -302,7 +310,10 @@ class ShopifyAPI:
             variants_data = [
                 {
                     'id': f'gid://shopify/ProductVariant/{update["variant_id"]}',
-                    'price': str(update['price'])
+                    'price': str(round(float(update['cost']) * margin, 2)),
+                    'inventoryItem': {
+                        'cost': float(update['cost'])
+                    }
                 }
                 for update in variant_updates
             ]
@@ -312,23 +323,26 @@ class ShopifyAPI:
                 'variants': variants_data
             }
             
+            logger.info(f"Actualizando precios con margen {margin}")
             result = self._make_request(query, variables)
             user_errors = result.get('productVariantsBulkUpdate', {}).get('userErrors', [])
             
             if user_errors:
                 logger.error(f"Errores en actualización masiva: {user_errors}")
-                return {update['variant_id']: False for update in variant_updates}
+                return {str(update['variant_id']): False for update in variant_updates}
             
             updated_variants = result.get('productVariantsBulkUpdate', {}).get('productVariants', [])
             results = {}
             
             for update in variant_updates:
-                variant_id = update['variant_id']
-                success = any(v['id'].endswith(variant_id) for v in updated_variants)
+                variant_id = str(update['variant_id'])
+                success = any(str(v['id']).split('/')[-1] == variant_id for v in updated_variants)
+                if success:
+                    logger.info(f"Variante {variant_id}: coste={update['cost']}, precio={round(float(update['cost']) * margin, 2)}")
                 results[variant_id] = success
             
             return results
             
         except Exception as e:
             logger.error(f"Error en actualización masiva de precios: {str(e)}")
-            return {update['variant_id']: False for update in variant_updates}
+            return {str(update['variant_id']): False for update in variant_updates}
