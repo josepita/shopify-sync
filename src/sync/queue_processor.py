@@ -5,6 +5,7 @@ import time
 from typing import List, Dict
 import os
 import sys
+import argparse
 from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -55,31 +56,67 @@ class QueueProcessor:
         ]
 
     def get_pending_stock_updates(self) -> List[Dict]:
-        """Obtiene un lote de actualizaciones de stock pendientes o con error"""
-        result = self.db.execute(text("""
-            SELECT 
-                sq.id as queue_id,
-                sq.variant_mapping_id,
-                sq.new_stock,
-                vm.inventory_item_id,
-                sq.status 
-            FROM stock_updates_queue sq
-            JOIN variant_mappings vm ON sq.variant_mapping_id = vm.id
-            WHERE sq.status IN ('pending', 'error')
-            ORDER BY sq.created_at
-            LIMIT :limit
-        """), {'limit': self.batch_size})
-        
-        return [
-            { 
-                'queue_id': row[0],
-                'variant_mapping_id': row[1],
-                'new_stock': row[2],
-                'inventory_item_id': row[3],
-                'status': row[4]
-            }
-            for row in result
-        ]
+        try:
+            logger.info("Consultando actualizaciones de stock pendientes...")
+            
+            # Primero verificar integridad
+            integrity_check = self.db.execute(text("""
+                SELECT sq.id, sq.variant_mapping_id
+                FROM stock_updates_queue sq
+                LEFT JOIN variant_mappings vm ON sq.variant_mapping_id = vm.id
+                WHERE vm.id IS NULL AND sq.status IN ('pending', 'error')
+            """))
+            
+            orphaned = list(integrity_check)
+            if orphaned:
+                logger.error(f"Encontradas {len(orphaned)} actualizaciones sin variante asociada: {orphaned}")
+
+            # Verificar variantes sin inventory_item_id
+            invalid_variants = self.db.execute(text("""
+                SELECT vm.id, vm.internal_sku
+                FROM variant_mappings vm
+                WHERE vm.inventory_item_id IS NULL
+            """))
+            
+            invalid = list(invalid_variants)
+            if invalid:
+                logger.error(f"Variantes sin inventory_item_id: {invalid}")
+
+            # Query original con más información
+            result = self.db.execute(text("""
+                SELECT 
+                    sq.id as queue_id,
+                    sq.variant_mapping_id,
+                    sq.new_stock,
+                    vm.inventory_item_id,
+                    vm.internal_sku,
+                    sq.status,
+                    sq.created_at
+                FROM stock_updates_queue sq
+                JOIN variant_mappings vm ON sq.variant_mapping_id = vm.id
+                WHERE sq.status IN ('pending', 'error')
+                ORDER BY sq.created_at
+                LIMIT :limit
+            """), {'limit': self.batch_size})
+
+            updates = []
+            for row in result:
+                logger.info(f"Stock update - Queue ID: {row[0]}, SKU: {row[4]}, Stock: {row[2]}, Inventory ID: {row[3]}")
+                updates.append({ 
+                    'queue_id': row[0],
+                    'variant_mapping_id': row[1],
+                    'new_stock': row[2],
+                    'inventory_item_id': row[3],
+                    'internal_sku': row[4],
+                    'status': row[5],
+                    'created_at': row[6]
+                })
+
+            return updates
+                
+        except Exception as e:
+            logger.error(f"Error en get_pending_stock_updates: {e}")
+            return []
 
 
     def process_price_updates(self):
@@ -175,47 +212,80 @@ class QueueProcessor:
         except Exception as e:
             logger.error(f"Error en proceso de actualización de stock: {str(e)}")
 
-    def process_queues(self):
-        """Procesa ambas colas continuamente"""
+    def process_queues(self, process_type='all'):
+        """
+        Procesa las colas según el tipo especificado
+        Args:
+            process_type: 'all', 'prices', 'stock'
+        """
         while True:
             try:
                 start_time = datetime.now()
-                
-                # Obtener estadísticas iniciales
                 stats = self.get_queue_stats()
-                total_pending = stats['pending_price'] + stats['error_price'] + stats['pending_stock'] + stats['error_stock']
                 
-                logger.info(f"Estado de las colas:")
-                logger.info(f"Precios -> Pendientes: {stats['pending_price']}, Error: {stats['error_price']}")
-                logger.info(f"Stock -> Pendientes: {stats['pending_stock']}, Error: {stats['error_stock']}")
-
-                if total_pending > 0:
-                    # Procesar colas
-                    logger.info("Procesando cola de precios...")
-                    self.process_price_updates()
-                    
-                    logger.info("Procesando cola de stock...")
-                    self.process_stock_updates()
-
-                    # Obtener estadísticas finales
-                    end_stats = self.get_queue_stats()
-                    processed_price = (stats['pending_price'] + stats['error_price']) - (end_stats['pending_price'] + end_stats['error_price'])
-                    processed_stock = (stats['pending_stock'] + stats['error_stock']) - (end_stats['pending_stock'] + end_stats['error_stock'])
-
-                    logger.info(f"Procesamiento completado:")
-                    logger.info(f"Precios procesados: {processed_price}")
-                    logger.info(f"Stock procesado: {processed_stock}")
-
-                    # Enviar resumen si hay email configurado
-                    if self.email_sender and (processed_price > 0 or processed_stock > 0):
-                        self.send_processing_summary(processed_price, processed_stock, end_stats)
+                if process_type == 'prices':
+                    initial_total = stats['pending_price'] + stats['error_price']
+                elif process_type == 'stock':
+                    initial_total = stats['pending_stock'] + stats['error_stock']
                 else:
-                    logger.info("No hay registros pendientes de procesar")
-                    time.sleep(60)  # Esperar 1 minuto antes de siguiente check
+                    initial_total = stats['pending_price'] + stats['error_price'] + \
+                                    stats['pending_stock'] + stats['error_stock']
+                
+                if initial_total > 0:
+                    processed = 0
+                    print(f"\nTotal a procesar: {initial_total:,} registros")
+                    
+                    while processed < initial_total:
+                        prev_processed = processed
+                        
+                        if process_type in ['all', 'prices']:
+                            self.process_price_updates()
+                        if process_type in ['all', 'stock']:
+                            self.process_stock_updates()
+                        
+                        current_stats = self.get_queue_stats()
+                        current_total = 0
+                        
+                        if process_type == 'prices':
+                            current_total = current_stats['pending_price'] + current_stats['error_price']
+                        elif process_type == 'stock':
+                            current_total = current_stats['pending_stock'] + current_stats['error_stock']
+                        else:
+                            current_total = current_stats['pending_price'] + current_stats['error_price'] + \
+                                            current_stats['pending_stock'] + current_stats['error_stock']
+                        
+                        processed = initial_total - current_total
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        rate = processed / elapsed if elapsed > 0 else 0
+                        remaining = (initial_total - processed) / rate if rate > 0 else 0
+                        
+                        if processed > prev_processed:
+                            print(
+                                f"\rProcesados: {processed:,} ({processed/initial_total*100:.1f}%) - "
+                                f"Pendientes: {initial_total-processed:,} - "
+                                f"Tiempo: {elapsed/60:.1f}min - "
+                                f"ETA: {remaining/60:.1f}min", 
+                                end=""
+                            )
+                        
+                        if current_total == 0:
+                            break
+                    
+                    print(f"\nProcesamiento {process_type} completado en {elapsed/60:.1f} minutos")
+                    
+                    if self.email_sender:
+                        self.send_processing_summary(
+                            initial_total - current_stats['pending_price'] - current_stats['error_price'],
+                            initial_total - current_stats['pending_stock'] - current_stats['error_stock'],
+                            current_stats
+                        )
+                else:
+                    print(f"\nNo hay registros pendientes para {process_type}")
+                    time.sleep(60)
 
             except Exception as e:
-                logger.error(f"Error en proceso principal: {str(e)}")
-                time.sleep(30)  # Esperar antes de reintentar
+                logger.error(f"Error: {str(e)}")
+                time.sleep(30)
 
     def get_queue_stats(self) -> Dict:
         """Obtiene estadísticas de las colas"""
@@ -313,15 +383,26 @@ class QueueProcessor:
             logger.error(f"Error enviando resumen: {str(e)}")
 
 if __name__ == "__main__":
-    load_dotenv()
-    
-    # Inicializar componentes
-    shopify = ShopifyAPI(
-        shop_url=os.getenv('SHOPIFY_SHOP_URL'),
-        access_token=os.getenv('SHOPIFY_ACCESS_TOKEN')
-    )
-    email_sender = EmailSender()
-    
-    # Crear y ejecutar procesador
-    processor = QueueProcessor(shopify, email_sender)
-    processor.process_queues()
+   load_dotenv()
+   
+   parser = argparse.ArgumentParser(description="Procesador de colas de Shopify")
+   parser.add_argument(
+       '--type', 
+       choices=['all', 'prices', 'stock'],
+       help='Tipo de procesamiento (por defecto: all):\n'
+            'all: Procesa cambios de precio y stock\n'
+            'prices: Solo procesa cambios de precio\n'
+            'stock: Solo procesa cambios de stock'
+   )
+   args = parser.parse_args()
+
+   process_type = args.type if args.type else 'all'
+   
+   shopify = ShopifyAPI(
+       shop_url=os.getenv('SHOPIFY_SHOP_URL'),
+       access_token=os.getenv('SHOPIFY_ACCESS_TOKEN')
+   )
+   email_sender = EmailSender()
+   
+   processor = QueueProcessor(shopify, email_sender)
+   processor.process_queues(process_type)

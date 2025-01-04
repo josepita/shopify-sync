@@ -146,19 +146,20 @@ class CSVProcessor:
                 products_diff = 0
 
             stats = {
-                'total_products': total_products,
-                'zero_prices': {
-                    'count': zero_prices_count,
-                    'percent': zero_prices_percent,
-                    'products': zero_prices[['REFERENCIA', 'DESCRIPCION']].to_dict('records')
+                'current': {
+                    'total': total_products,
+                    'zero_prices': {
+                        'count': zero_prices_count,
+                        'percent': round(zero_prices_percent, 1)
+                    },
+                    'zero_stock': {
+                        'count': zero_stock,
+                        'percent': round(zero_stock_percent, 1)
+                    }
                 },
-                'zero_stock': {
-                    'count': zero_stock,
-                    'percent': zero_stock_percent
-                },
-                'products_diff': {
-                    'count': products_diff,
-                    'percent': diff_percent
+                'previous': {
+                    'total': prev_total if os.path.exists(self.file_manager.previous_file) else 0,
+                    'difference': products_diff
                 }
             }
 
@@ -229,62 +230,84 @@ class CSVProcessor:
 
     def detect_discontinued_products(self, days_threshold: int = 3) -> Dict:
         """
-        Detecta productos que no han aparecido en los últimos X días.
-        Tiene en cuenta posibles días sin datos y usa la última ejecución exitosa de cada día.
+        Detecta productos que no aparecen en el catálogo actual pero sí en catálogos anteriores.
+        
+        Proceso:
+        1. Obtiene referencias del catálogo actual
+        2. Busca archivos CSV de los últimos X días (days_threshold)
+        3. Por cada archivo histórico:
+            - Compara referencias con catálogo actual
+            - Registra productos ausentes
+            - Acumula días de ausencia
+        4. Filtra productos ausentes por días_threshold
         
         Args:
-            days_threshold (int): Número de días consecutivos sin aparecer para considerar un producto descatalogado
-        
+            days_threshold: Días consecutivos sin aparecer para considerar descatalogado
+            
         Returns:
-            Dict: Diccionario con los productos potencialmente descatalogados
+            Dict con productos descatalogados:
+            {
+                'referencia': {
+                    'referencia': str,
+                    'descripcion': str,
+                    'first_missing_date': date,
+                    'last_price': float,
+                    'last_stock': int,
+                    'dias_ausente': int
+                }
+            }
         """
         try:
-            # Leer CSV actual
             if not os.path.exists(self.current_file):
                 logger.error("No existe archivo actual para comparar")
                 return {}
-                
+                    
             current_df = pd.read_csv(self.current_file)
             current_refs = set(current_df['REFERENCIA'])
             
-            # Obtener último archivo exitoso de cada día
+            logger.info(f"Referencias en catálogo actual: {len(current_refs)}")
+            
             last_days_files = []
             last_days_dates = []
             
-            for i in range(1, days_threshold + 2):  # +2 para tener un día extra de margen
+            logger.info(f"Buscando archivos de los últimos {days_threshold} días...")
+            
+            for i in range(1, days_threshold + 2):
                 date = datetime.now() - timedelta(days=i)
                 day_folder = os.path.join(
                     self.csv_dir,
                     date.strftime('%Y%m%d')
                 )
                 
-                # Buscar archivos del día
                 if os.path.exists(day_folder):
                     files = sorted([f for f in os.listdir(day_folder) if f.endswith('.csv')])
-                    if files:  # Si hay archivos ese día, tomar el último
+                    if files:
                         file_path = os.path.join(day_folder, files[-1])
                         last_days_files.append(file_path)
                         last_days_dates.append(date.strftime('%Y-%m-%d'))
-                        logger.info(f"Encontrado archivo para {date.strftime('%Y-%m-%d')}: {files[-1]}")
-                        print(f"Usando archivo para {date.strftime('%Y-%m-%d')}: {file_path}")
+                        logger.info(f"Día {date.strftime('%Y-%m-%d')}: usando archivo {files[-1]}")
+                    else:
+                        logger.info(f"Día {date.strftime('%Y-%m-%d')}: no hay archivos CSV")
+                else:
+                    logger.info(f"Día {date.strftime('%Y-%m-%d')}: carpeta no existe")
 
             if len(last_days_files) < days_threshold:
                 logger.warning(
-                    f"No hay suficientes días con datos ({len(last_days_files)} de {days_threshold}) "
-                    "para detectar productos descatalogados"
+                    f"Insuficientes días con datos ({len(last_days_files)} de {days_threshold})"
                 )
                 return {}
 
-            # Analizar cada archivo histórico
             discontinued = {}
             
             for idx, file_path in enumerate(last_days_files):
                 try:
                     df = pd.read_csv(file_path)
                     historic_refs = set(df['REFERENCIA'])
-                    
-                    # Productos que están en el archivo histórico pero no en el actual
                     missing_refs = historic_refs - current_refs
+                    
+                    logger.info(f"Analizando {file_path}")
+                    logger.info(f"- Referencias históricas: {len(historic_refs)}")
+                    logger.info(f"- Referencias ausentes: {len(missing_refs)}")
                     
                     for ref in missing_refs:
                         product_data = df[df['REFERENCIA'] == ref].iloc[0]
@@ -293,6 +316,7 @@ class CSVProcessor:
                             discontinued[ref] = {
                                 'referencia': ref,
                                 'descripcion': product_data['DESCRIPCION'],
+                                'imagen': product_data['IMAGEN 1'],
                                 'first_missing_date': last_days_dates[idx],
                                 'last_price': float(product_data['PRECIO']),
                                 'last_stock': int(product_data['STOCK']),
@@ -302,33 +326,22 @@ class CSVProcessor:
                             discontinued[ref]['dias_ausente'] += 1
                             
                 except Exception as e:
-                    logger.error(f"Error procesando archivo {file_path}: {str(e)}")
-                    # Continuar con el siguiente archivo
+                    logger.error(f"Error procesando {file_path}: {str(e)}")
 
-            # Filtrar solo los que llevan ausentes el número de días especificado
             final_discontinued = {
                 ref: data for ref, data in discontinued.items() 
                 if data['dias_ausente'] >= days_threshold
             }
 
-            # Ordenar por días ausente
-            final_discontinued = dict(
-                sorted(
-                    final_discontinued.items(), 
-                    key=lambda x: x[1]['dias_ausente'], 
-                    reverse=True
-                )
-            )
-
             logger.info(
-                f"Detectados {len(final_discontinued)} productos potencialmente descatalogados "
-                f"(ausentes por {days_threshold} días o más)"
+                f"Productos descatalogados encontrados: {len(final_discontinued)} "
+                f"(ausentes {days_threshold} días o más)"
             )
             
             return final_discontinued
 
         except Exception as e:
-            logger.error(f"Error detectando productos descatalogados: {str(e)}")
+            logger.error(f"Error en detect_discontinued_products: {str(e)}")
             return {}
 
     

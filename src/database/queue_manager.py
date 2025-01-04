@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR) 
 
 class QueueManager:
    def __init__(self, db_session):

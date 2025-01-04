@@ -47,13 +47,119 @@ Tablas principales:
 - `price_history`: Histórico de precios
 - `stock_history`: Histórico de stock
 
-## Uso
 
-### Sincronización normal
+## Sincronización del catálogo (actualizar colas)
+
+`python src/sync/catalog.py` o `python src/sync/catalog.py --force`
+
+Es el sistema que detecta cambios de precios entre distintos CSV y los mete en la cola de procesamiento de stock y precios, así como en los históricos de precios y stock.
+
+Este sistema descarga el catálogo de Perez Mora, lo procesa y lo compara con el ultimo de que disponga. 
+
+Resumen 
+
+- Descarga y procesamiento de CSV
+- Detección de cambios (precio/stock)
+- Informe de posibles productos descatalogados
+- Mantiene sistema de colas para actualizaciones
+- Reportes y alertas por email 
+
+### Análisis Sistema de Sincronización de Catálogo
+
+#### 1. ESTRUCTURA GENERAL
+El sistema maneja la sincronización de un catálogo de productos entre un CSV fuente y Shopify, con estas funciones principales:
+* Descarga y procesamiento de CSV 
+* Detección de cambios (precio/stock)
+* Gestión de productos descatalogados
+* Sistema de colas para actualizaciones
+* Reportes y alertas por email
+
+#### 2. FLUJO PRINCIPAL (catalog.py)
+
+##### a) Inicialización
+* Carga configuración (.env)
+* Inicializa servicios (FileManager, CSVProcessor, DB, QueueManager, EmailSender)
+
+##### b) Obtención del Catálogo  
+* Verifica si existe catálogo del día actual
+* Si no existe/modo forzado: descarga nuevo catálogo
+* Si existe: reutiliza el último archivo del día
+
+##### c) Validación y Estadísticas
+* Valida estructura del CSV
+* Calcula estadísticas (productos totales, precios 0, stock 0)
+* Verifica variantes mapeadas en Shopify
+
+##### d) Procesamiento (dos modos)
+
+###### Modo Normal
+* Detecta cambios comparando con catálogo anterior
+* Procesa cambios de precio y stock 
+* Detecta productos descatalogados
+
+###### Modo Forzado
+* Procesa todos los productos sin comparar
+* Actualiza precios y stock de todo el catálogo
+
+##### e) Informes
+* Genera reporte HTML con estadísticas
+* Envía email con resumen
+* Si hay productos descatalogados, envía reporte separado
+
+#### 3. PROCESAMIENTO CSV (processor.py)
+
+##### a) Validaciones
+* Columnas requeridas
+* Tipos de datos numéricos 
+* Valores mínimos (precio > 0)
+* Diferencias significativas con catálogo anterior
+
+##### b) Detección de Cambios
+* Compara precios y stock con versión anterior
+* Registra diferencias con valores antiguos y nuevos
+
+##### c) Productos Descatalogados
+* Analiza últimos X días de catálogos
+* Detecta productos ausentes consecutivamente 
+* Guarda último precio/stock conocido
+
+#### 4. CONTROLES Y SEGURIDAD
+
+##### a) Validación de Datos
+* Estructura CSV completa
+* Tipos de datos correctos
+* Valores numéricos válidos
+* Límites en diferencias de productos (>10%)
+* Alerta por stock masivo en 0 (>40%)
+
+##### b) Control de Archivos
+* Gestión de versiones por fecha
+* Backup de catálogos anteriores 
+* Verificación de existencia de archivos
+
+##### c) Control de Errores
+* Manejo de excepciones en cada etapa
+* Rollback en operaciones de BD
+* Logging detallado
+* Notificaciones de error por email
+
+##### d) Rate Limiting
+* Control en actualizaciones Shopify
+* Procesamiento por lotes
+* Tiempos de espera entre operaciones
+
+#### 5. REPORTES Y MONITOR
+* Estadísticas detalladas de cambios
+* Seguimiento de productos descatalogados
+* Alertas por email para precios 0
+* Logs detallados de operaciones
+* Tiempos de procesamiento
+
+##### Sincronización normal
 
 python src/sync/catalog.py
 
-### Sincronización forzada
+##### Sincronización forzada
 
 python src/sync/catalog.py --force
 

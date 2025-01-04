@@ -22,6 +22,7 @@ class ShopifyAPI:
         self.last_request_time = 0
         self.min_request_interval = 0.5
 
+
     def _handle_rate_limit(self):
         """Maneja el rate limiting para no exceder los límites de la API"""
         current_time = time.time()
@@ -55,6 +56,22 @@ class ShopifyAPI:
         except Exception as e:
             logger.error(f"Error en petición GraphQL: {str(e)}")
             raise
+
+    def get_inventory_item_by_sku(self, sku: str):
+        query = """
+        {
+            inventoryItems(first: 1, query: "sku:'%s'") {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+        """ % sku
+        result = self._make_request(query)  # Cambiado de execute_graphql a _make_request
+        items = result.get('inventoryItems', {}).get('edges', [])
+        return items[0]['node'] if items else None   
 
     def get_product(self, product_id: str) -> Optional[Dict[str, Any]]:
         """
