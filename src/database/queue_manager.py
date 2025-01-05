@@ -34,20 +34,40 @@ class QueueManager:
                 VALUES (:reference, :price, :date)
             """), price_history)
 
-            # Log e inserción cola
-            price_update = {
-                'variant_mapping_id': variant_id,
-                'new_price': data['new_price'],
-                'status': 'pending',
-                'created_at': datetime.now()
-            }
-            logger.info(f"Insertando en price_updates_queue: {price_update}")
-            
-            self.db.execute(text("""
-                INSERT INTO price_updates_queue 
-                (variant_mapping_id, new_price, status, created_at) 
-                VALUES (:variant_mapping_id, :new_price, :status, :created_at)
-            """), price_update)
+            # Verificar si existe actualización pendiente
+            existing = self.db.execute(text("""
+                SELECT id FROM price_updates_queue 
+                WHERE variant_mapping_id = :variant_id 
+                AND status = 'pending'
+            """), {'variant_id': variant_id}).fetchone()
+
+            if existing:
+                # Actualizar precio en registro existente
+                self.db.execute(text("""
+                    UPDATE price_updates_queue 
+                    SET new_price = :new_price,
+                        created_at = CURRENT_TIMESTAMP
+                    WHERE id = :id
+                """), {
+                    'new_price': data['new_price'],
+                    'id': existing[0]
+                })
+                logger.info(f"Actualizado registro existente para {ref}")
+            else:
+                # Insertar nuevo registro
+                price_update = {
+                    'variant_mapping_id': variant_id,
+                    'new_price': data['new_price'],
+                    'status': 'pending',
+                    'created_at': datetime.now()
+                }
+                logger.info(f"Insertando en price_updates_queue: {price_update}")
+                
+                self.db.execute(text("""
+                    INSERT INTO price_updates_queue 
+                    (variant_mapping_id, new_price, status, created_at) 
+                    VALUES (:variant_mapping_id, :new_price, :status, :created_at)
+                """), price_update)
 
         self.db.commit()
         return True
@@ -80,20 +100,40 @@ class QueueManager:
                 VALUES (:reference, :stock, :date)
             """), stock_history)
 
-            # Log e inserción cola
-            stock_update = {
-                'variant_mapping_id': variant_id,
-                'new_stock': data['new_stock'],
-                'status': 'pending',
-                'created_at': datetime.now()
-            }
-            logger.info(f"Insertando en stock_updates_queue: {stock_update}")
-            
-            self.db.execute(text("""
-                INSERT INTO stock_updates_queue 
-                (variant_mapping_id, new_stock, status, created_at) 
-                VALUES (:variant_mapping_id, :new_stock, :status, :created_at)
-            """), stock_update)
+            # Verificar si existe actualización pendiente
+            existing = self.db.execute(text("""
+                SELECT id FROM stock_updates_queue 
+                WHERE variant_mapping_id = :variant_id 
+                AND status = 'pending'
+            """), {'variant_id': variant_id}).fetchone()
+
+            if existing:
+                # Actualizar stock en registro existente
+                self.db.execute(text("""
+                    UPDATE stock_updates_queue 
+                    SET new_stock = :new_stock,
+                        created_at = CURRENT_TIMESTAMP
+                    WHERE id = :id
+                """), {
+                    'new_stock': data['new_stock'],
+                    'id': existing[0]
+                })
+                logger.info(f"Actualizado registro existente para {ref}")
+            else:
+                # Insertar nuevo registro
+                stock_update = {
+                    'variant_mapping_id': variant_id,
+                    'new_stock': data['new_stock'],
+                    'status': 'pending',
+                    'created_at': datetime.now()
+                }
+                logger.info(f"Insertando en stock_updates_queue: {stock_update}")
+                
+                self.db.execute(text("""
+                    INSERT INTO stock_updates_queue 
+                    (variant_mapping_id, new_stock, status, created_at) 
+                    VALUES (:variant_mapping_id, :new_stock, :status, :created_at)
+                """), stock_update)
 
         self.db.commit()
         return True

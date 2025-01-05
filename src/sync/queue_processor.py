@@ -218,70 +218,114 @@ class QueueProcessor:
         Args:
             process_type: 'all', 'prices', 'stock'
         """
+        logger.setLevel(logging.WARNING)
+        logging.getLogger('src.shopify.api').setLevel(logging.WARNING)
+        
+        def format_time(seconds):
+            """Formatea segundos en formato legible"""
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            return f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+
         while True:
             try:
-                start_time = datetime.now()
+                start_time = time.time()
                 stats = self.get_queue_stats()
                 
-                if process_type == 'prices':
-                    initial_total = stats['pending_price'] + stats['error_price']
-                elif process_type == 'stock':
-                    initial_total = stats['pending_stock'] + stats['error_stock']
-                else:
-                    initial_total = stats['pending_price'] + stats['error_price'] + \
-                                    stats['pending_stock'] + stats['error_stock']
+                pending_price = stats['pending_price'] + stats['error_price']
+                pending_stock = stats['pending_stock'] + stats['error_stock']
                 
-                if initial_total > 0:
-                    processed = 0
-                    print(f"\nTotal a procesar: {initial_total:,} registros")
-                    
-                    while processed < initial_total:
-                        prev_processed = processed
-                        
-                        if process_type in ['all', 'prices']:
-                            self.process_price_updates()
-                        if process_type in ['all', 'stock']:
-                            self.process_stock_updates()
-                        
-                        current_stats = self.get_queue_stats()
-                        current_total = 0
-                        
-                        if process_type == 'prices':
-                            current_total = current_stats['pending_price'] + current_stats['error_price']
-                        elif process_type == 'stock':
-                            current_total = current_stats['pending_stock'] + current_stats['error_stock']
-                        else:
-                            current_total = current_stats['pending_price'] + current_stats['error_price'] + \
-                                            current_stats['pending_stock'] + current_stats['error_stock']
-                        
-                        processed = initial_total - current_total
-                        elapsed = (datetime.now() - start_time).total_seconds()
-                        rate = processed / elapsed if elapsed > 0 else 0
-                        remaining = (initial_total - processed) / rate if rate > 0 else 0
-                        
-                        if processed > prev_processed:
-                            print(
-                                f"\rProcesados: {processed:,} ({processed/initial_total*100:.1f}%) - "
-                                f"Pendientes: {initial_total-processed:,} - "
-                                f"Tiempo: {elapsed/60:.1f}min - "
-                                f"ETA: {remaining/60:.1f}min", 
-                                end=""
-                            )
-                        
-                        if current_total == 0:
-                            break
-                    
-                    print(f"\nProcesamiento {process_type} completado en {elapsed/60:.1f} minutos")
-                    
-                    if self.email_sender:
-                        self.send_processing_summary(
-                            initial_total - current_stats['pending_price'] - current_stats['error_price'],
-                            initial_total - current_stats['pending_stock'] - current_stats['error_stock'],
-                            current_stats
-                        )
+                if process_type == 'prices':
+                    initial_total = pending_price
+                elif process_type == 'stock':
+                    initial_total = pending_stock
                 else:
+                    initial_total = pending_price + pending_stock
+                    
+                if initial_total == 0:
                     print(f"\nNo hay registros pendientes para {process_type}")
                     time.sleep(60)
+                    continue
+
+                # Mostrar resumen inicial
+                print("\n" + "="*50)
+                print("COLA DE ACTUALIZACIONES")
+                print("="*50)
+                print(f"Inicio: {datetime.now().strftime('%H:%M:%S')}")
+                if process_type in ['all', 'prices']:
+                    print(f"\nPRECIOS:")
+                    print(f"- Pendientes: {stats['pending_price']:,}")
+                    print(f"- Con error: {stats['error_price']:,}")
+                if process_type in ['all', 'stock']:
+                    print(f"\nSTOCK:")
+                    print(f"- Pendientes: {stats['pending_stock']:,}")
+                    print(f"- Con error: {stats['error_stock']:,}")
+                print("="*50)
+
+                processed = 0
+                processing_times = []
+                
+                while processed < initial_total:
+                    cycle_start = time.time()
+                    prev_processed = processed
+
+                    if process_type in ['all', 'prices']:
+                        self.process_price_updates()
+                    if process_type in ['all', 'stock']:
+                        self.process_stock_updates()
+
+                    current_stats = self.get_queue_stats()
+                    
+                    if process_type == 'prices':
+                        current_total = current_stats['pending_price'] + current_stats['error_price']
+                    elif process_type == 'stock':
+                        current_total = current_stats['pending_stock'] + current_stats['error_stock']
+                    else:
+                        current_total = (current_stats['pending_price'] + current_stats['error_price'] + 
+                                    current_stats['pending_stock'] + current_stats['error_stock'])
+
+                    processed = initial_total - current_total
+                    
+                    # Actualizar estadísticas si hubo progreso
+                    if processed > prev_processed:
+                        elapsed = time.time() - start_time
+                        items_per_second = processed / elapsed if elapsed > 0 else 0
+                        eta = (initial_total - processed) / items_per_second if items_per_second > 0 else 0
+                        
+                        print(
+                            f"\rProcesados: {processed:,}/{initial_total:,} ({processed/initial_total*100:.1f}%) - "
+                            f"Velocidad: {items_per_second:.1f} items/s - "
+                            f"Tiempo transcurrido: {format_time(elapsed)} - "
+                            f"Tiempo restante: {format_time(eta)}", 
+                            end=""
+                        )
+
+                    if current_total == 0:
+                        break
+
+                    time.sleep(1)  # Dar tiempo para actualizaciones de BD
+
+                # Resumen final
+                total_time = time.time() - start_time
+                print("\n" + "="*50)
+                print("RESUMEN FINAL")
+                print("="*50)
+                print(f"Inicio: {datetime.fromtimestamp(start_time).strftime('%H:%M:%S')}")
+                print(f"Fin: {datetime.now().strftime('%H:%M:%S')}")
+                print(f"Tiempo total: {format_time(total_time)}")
+                print(f"Items procesados: {processed:,}")
+                print(f"Velocidad media: {processed/total_time:.1f} items/s")
+                print("="*50)
+                
+                if self.email_sender:
+                    self.send_processing_summary(
+                        initial_total - current_stats['pending_price'] - current_stats['error_price'],
+                        initial_total - current_stats['pending_stock'] - current_stats['error_stock'],
+                        current_stats
+                    )
+
+                # Esperar antes de siguiente ciclo
+                time.sleep(30)
 
             except Exception as e:
                 logger.error(f"Error: {str(e)}")
