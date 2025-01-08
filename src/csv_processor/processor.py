@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import os
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -393,4 +394,119 @@ class CSVProcessor:
         except Exception as e:
             logger.error(f"Error enviando alerta de precios: {str(e)}")
             return False
+
+    def detect_missing_variants(self, db) -> Dict:
+        """
+        Detecta productos que están en variant_mappings pero no en el CSV actual
         
+        Returns:
+            Dict con productos no encontrados en el CSV:
+            {
+                'referencia': {
+                    'reference': str,
+                    'name': str,
+                    'last_price': float,
+                    'last_stock': int,
+                }
+            }
+        """
+        try:
+            if not os.path.exists(self.current_file):
+                logger.error("No existe archivo actual para comparar")
+                return {}
+                
+            current_df = pd.read_csv(self.current_file)
+            current_refs = set(current_df['REFERENCIA'])
+            
+            # Obtener referencias de variant_mappings
+            result = db.execute(text("""
+                WITH LastPrice AS (
+                    SELECT reference, price, date,
+                        ROW_NUMBER() OVER (PARTITION BY reference ORDER BY date DESC) as rn
+                    FROM price_history
+                ),
+                LastStock AS (
+                    SELECT reference, stock, date,
+                        ROW_NUMBER() OVER (PARTITION BY reference ORDER BY date DESC) as rn
+                    FROM stock_history
+                )
+                SELECT 
+                    vm.internal_sku,
+                    COALESCE(lp.price, 0) as last_price,
+                    COALESCE(ls.stock, 0) as last_stock
+                FROM variant_mappings vm
+                LEFT JOIN (SELECT reference, price FROM LastPrice WHERE rn = 1) lp 
+                    ON lp.reference = vm.internal_sku
+                LEFT JOIN (SELECT reference, stock FROM LastStock WHERE rn = 1) ls 
+                    ON ls.reference = vm.internal_sku
+            """))
+            
+            missing_variants = {}
+            total_variants = 0
+            
+            for row in result:
+                total_variants += 1
+                if row[0] not in current_refs:
+                    missing_variants[row[0]] = {
+                        'reference': row[0],
+                        'last_price': float(row[1] or 0),
+                        'last_stock': int(row[2] or 0)
+                    }
+            
+            logger.info(
+                f"Encontrados {len(missing_variants)} productos en variant_mappings no presentes en CSV "
+                f"({(len(missing_variants)/total_variants*100):.1f}% del total)"
+            )
+            
+            return missing_variants, total_variants
+                
+        except Exception as e:
+            logger.error(f"Error en detect_missing_variants: {str(e)}")
+            return {}, 0
+
+
+    def detect_new_and_removed_products(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Detecta productos nuevos y eliminados entre el CSV actual y el anterior
+        Returns:
+            Tuple[DataFrame, DataFrame]: (productos_nuevos, productos_eliminados)
+        """
+        try:
+            current_df = pd.read_csv(self.current_file)
+            
+            if not os.path.exists(self.file_manager.previous_file):
+                logger.warning("No existe archivo previo para comparar") 
+                return pd.DataFrame(), pd.DataFrame()
+
+            previous_df = pd.read_csv(self.file_manager.previous_file)
+
+            # Obtener conjuntos de referencias
+            current_refs = set(current_df['REFERENCIA'])
+            previous_refs = set(previous_df['REFERENCIA'])
+
+            # Detectar altas y bajas
+            new_refs = current_refs - previous_refs
+            removed_refs = previous_refs - current_refs
+
+            # Crear DataFrames con todos los datos de las referencias
+            new_products = current_df[current_df['REFERENCIA'].isin(new_refs)]
+            removed_products = previous_df[previous_df['REFERENCIA'].isin(removed_refs)]
+
+            # Guardar CSVs en la carpeta del día
+            today = datetime.now().strftime('%Y%m%d')
+            data_dir = os.path.join(self.csv_dir, today)
+            os.makedirs(data_dir, exist_ok=True)
+
+            altas_file = os.path.join(data_dir, f'altas-{today}.csv')
+            bajas_file = os.path.join(data_dir, f'bajas-{today}.csv')
+
+            new_products.to_csv(altas_file, index=False)
+            removed_products.to_csv(bajas_file, index=False)
+
+            logger.info(f"Generados archivos de altas ({len(new_products)} productos) y bajas ({len(removed_products)} productos)")
+            
+            return new_products, removed_products
+
+        except Exception as e:
+            logger.error(f"Error detectando altas y bajas: {str(e)}")
+            return pd.DataFrame(), pd.DataFrame()       

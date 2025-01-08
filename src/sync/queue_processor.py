@@ -120,61 +120,65 @@ class QueueProcessor:
 
 
     def process_price_updates(self):
-            """Procesa la cola de actualizaciones de precio"""
-            try:
-                pending_updates = self.get_pending_price_updates()
-                logger.info(f"Encontrados {len(pending_updates)} precios para procesar")
-                
-                if not pending_updates:
-                    return
+        """Procesa la cola de actualizaciones de precio"""
+        try:
+            pending_updates = self.get_pending_price_updates()
+            if not pending_updates:
+                return
 
-                # Obtener margen de .env o usar valor por defecto
-                margin = float(os.getenv('PRICE_MARGIN', 2.5))
+            # Obtener configuración de precios
+            margin = float(os.getenv('PRICE_MARGIN', 2.5))
+            discount = float(os.getenv('PRICE_DISCOUNT', 0))
+            
+            # Agrupar por producto para usar bulk update
+            products_updates = {}
+            for update in pending_updates:
+                product_id = update['shopify_product_id']
+                if product_id not in products_updates:
+                    products_updates[product_id] = []
+                products_updates[product_id].append({
+                    'product_id': product_id,
+                    'variant_id': update['shopify_variant_id'],
+                    'cost': update['new_price'],
+                    'queue_id': update['queue_id']
+                })
                 
-                # Agrupar por producto para usar bulk update
-                products_updates = {}
-                for update in pending_updates:
-                    product_id = update['shopify_product_id']
-                    if product_id not in products_updates:
-                        products_updates[product_id] = []
-                    products_updates[product_id].append({
-                        'product_id': product_id,
-                        'variant_id': update['shopify_variant_id'],
-                        'cost': update['new_price'],  # Ahora new_price representa el coste
-                        'queue_id': update['queue_id']
-                    })
+            logger.info(f"Procesando actualizaciones para {len(products_updates)} productos "
+                        f"(margen: {margin}, descuento: {discount}%)")
+
+            # Procesar cada grupo
+            for product_id, variants in products_updates.items():
+                try:
+                    results = self.shopify.bulk_price_update(
+                        variants, 
+                        margin=margin,
+                        discount=discount
+                    )
                     
-                logger.info(f"Procesando actualizaciones para {len(products_updates)} productos con margen {margin}")
+                    # Actualizar estado en la cola
+                    for variant in variants:
+                        status = 'completed' if results.get(str(variant['variant_id'])) else 'error'
+                        logger.info(f"Actualizando estado de variante {variant['variant_id']} a {status}")
+                        
+                        self.db.execute(text("""
+                            UPDATE price_updates_queue
+                            SET status = :status, 
+                                processed_at = CURRENT_TIMESTAMP
+                            WHERE id = :queue_id
+                        """), {
+                            'status': status, 
+                            'queue_id': variant['queue_id']
+                        })
+                    
+                    self.db.commit()
+                    time.sleep(1)  # Rate limiting entre productos
+                    
+                except Exception as e:
+                    logger.error(f"Error procesando actualización de precios para producto {product_id}: {str(e)}")
+                    self.db.rollback()
 
-                # Procesar cada grupo
-                for product_id, variants in products_updates.items():
-                    try:
-                        results = self.shopify.bulk_price_update(variants, margin=margin)
-                        
-                        # Actualizar estado en la cola
-                        for variant in variants:
-                            status = 'completed' if results.get(str(variant['variant_id'])) else 'error'
-                            logger.info(f"Actualizando estado de variante {variant['variant_id']} a {status}")
-                            
-                            self.db.execute(text("""
-                                UPDATE price_updates_queue
-                                SET status = :status, 
-                                    processed_at = CURRENT_TIMESTAMP
-                                WHERE id = :queue_id
-                            """), {
-                                'status': status, 
-                                'queue_id': variant['queue_id']
-                            })
-                        
-                        self.db.commit()
-                        time.sleep(1)  # Rate limiting entre productos
-                        
-                    except Exception as e:
-                        logger.error(f"Error procesando actualización de precios para producto {product_id}: {str(e)}")
-                        self.db.rollback()
-
-            except Exception as e:
-                logger.error(f"Error en proceso de actualización de precios: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error en proceso de actualización de precios: {str(e)}")
 
     def process_stock_updates(self):
         """Procesa la cola de actualizaciones de stock"""

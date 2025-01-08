@@ -292,12 +292,13 @@ class ShopifyAPI:
             return False
 
 
-    def bulk_price_update(self, variant_updates: List[Dict[str, Any]], margin: float = 2.5) -> Dict[str, bool]:
+    def bulk_price_update(self, variant_updates: List[Dict[str, Any]], margin: float = 2.5, discount: float = 0) -> Dict[str, bool]:
         """
         Actualiza precios y costes de múltiples variantes en una sola operación
         Args:
             variant_updates: Lista de diccionarios con product_id, variant_id y cost
             margin: Margen a aplicar para calcular el precio (por defecto 2.5)
+            discount: Porcentaje de descuento a aplicar (por defecto 0)
         """
         query = """
         mutation bulkUpdateVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -305,6 +306,7 @@ class ShopifyAPI:
                 productVariants {
                     id
                     price
+                    compareAtPrice
                     inventoryItem {
                         unitCost {
                             amount
@@ -323,24 +325,38 @@ class ShopifyAPI:
             product_id = variant_updates[0]['product_id'] if variant_updates else None
             if not product_id:
                 raise ValueError("Se requiere un product_id para realizar la actualización masiva.")
-
-            variants_data = [
-                {
+            
+            variants_data = []
+            for update in variant_updates:
+                # Calcular precio original con margen
+                original_price = round(float(update['cost']) * margin, 2)
+                
+                # Si hay descuento, calcular precio con descuento
+                if discount > 0:
+                    discounted_price = round(original_price * (1 - discount/100), 2)
+                    price = str(discounted_price)
+                    compare_at_price = str(original_price)
+                else:
+                    price = str(original_price)
+                    compare_at_price = price  # Si no hay descuento, compareAtPrice igual a price
+                
+                variants_data.append({
                     'id': f'gid://shopify/ProductVariant/{update["variant_id"]}',
-                    'price': str(round(float(update['cost']) * margin, 2)),
+                    'price': price,
+                    'compareAtPrice': compare_at_price,
                     'inventoryItem': {
                         'cost': float(update['cost'])
                     }
-                }
-                for update in variant_updates
-            ]
+                })
             
             variables = {
                 'productId': f'gid://shopify/Product/{product_id}',
                 'variants': variants_data
             }
             
-            logger.info(f"Actualizando precios con margen {margin}")
+            logger.info(f"Actualizando precios con margen {margin}" + 
+                    (f" y descuento {discount}%" if discount > 0 else ""))
+            
             result = self._make_request(query, variables)
             user_errors = result.get('productVariantsBulkUpdate', {}).get('userErrors', [])
             
@@ -355,11 +371,17 @@ class ShopifyAPI:
                 variant_id = str(update['variant_id'])
                 success = any(str(v['id']).split('/')[-1] == variant_id for v in updated_variants)
                 if success:
-                    logger.info(f"Variante {variant_id}: coste={update['cost']}, precio={round(float(update['cost']) * margin, 2)}")
+                    original_price = round(float(update['cost']) * margin, 2)
+                    final_price = round(original_price * (1 - discount/100), 2) if discount > 0 else original_price
+                    logger.info(
+                        f"Variante {variant_id}: coste={update['cost']}, " +
+                        (f"precio original={original_price}, precio final={final_price}" if discount > 0 
+                        else f"precio={original_price}")
+                    )
                 results[variant_id] = success
             
             return results
-            
+                
         except Exception as e:
             logger.error(f"Error en actualización masiva de precios: {str(e)}")
             return {str(update['variant_id']): False for update in variant_updates}
