@@ -25,6 +25,22 @@ class QueueProcessor:
         self.db = next(get_db())
         self.batch_size = batch_size
         self.max_retries = max_retries
+        # Control de rate limit
+        self.points_per_second = 100
+        self.points_used = 0
+        self.last_reset = time.time()
+
+    def reset_points_if_needed(self):
+        """Resetea el contador de puntos si ha pasado 1 segundo"""
+        current_time = time.time()
+        if current_time - self.last_reset >= 1:
+            self.points_used = 0
+            self.last_reset = current_time
+
+    def can_use_points(self, points_needed: int) -> bool:
+        """Verifica si hay suficientes puntos disponibles"""
+        self.reset_points_if_needed()
+        return self.points_used + points_needed <= self.points_per_second
 
     def get_pending_price_updates(self) -> List[Dict]:
         """Obtiene un lote de actualizaciones de precio pendientes o con error"""
@@ -59,7 +75,7 @@ class QueueProcessor:
         try:
             logger.info("Consultando actualizaciones de stock pendientes...")
             
-            # Primero verificar integridad
+            # Verificar integridad
             integrity_check = self.db.execute(text("""
                 SELECT sq.id, sq.variant_mapping_id
                 FROM stock_updates_queue sq
@@ -82,7 +98,7 @@ class QueueProcessor:
             if invalid:
                 logger.error(f"Variantes sin inventory_item_id: {invalid}")
 
-            # Query original con más información
+            # Query principal
             result = self.db.execute(text("""
                 SELECT 
                     sq.id as queue_id,
@@ -118,110 +134,182 @@ class QueueProcessor:
             logger.error(f"Error en get_pending_stock_updates: {e}")
             return []
 
-
     def process_price_updates(self):
-        """Procesa la cola de actualizaciones de precio"""
+        """Procesa la cola de actualizaciones de precio de forma optimizada"""
         try:
             pending_updates = self.get_pending_price_updates()
             if not pending_updates:
                 return
 
-            # Obtener configuración de precios
+            # Configuración de precios
             margin = float(os.getenv('PRICE_MARGIN', 2.5))
             discount = float(os.getenv('PRICE_DISCOUNT', 0))
             
-            # Agrupar por producto para usar bulk update
+            # Agrupar por producto y procesar en lotes
             products_updates = {}
             for update in pending_updates:
                 product_id = update['shopify_product_id']
                 if product_id not in products_updates:
                     products_updates[product_id] = []
-                products_updates[product_id].append({
-                    'product_id': product_id,
-                    'variant_id': update['shopify_variant_id'],
-                    'cost': update['new_price'],
-                    'queue_id': update['queue_id']
-                })
-                
-            logger.info(f"Procesando actualizaciones para {len(products_updates)} productos "
-                        f"(margen: {margin}, descuento: {discount}%)")
+                products_updates[product_id].append(update)
 
-            # Procesar cada grupo
             for product_id, variants in products_updates.items():
+                # Calcular puntos necesarios: 10 base + 2 por variante adicional
+                points_needed = 10 + (len(variants) - 1) * 2
+                
+                # Esperar si no hay suficientes puntos
+                while not self.can_use_points(points_needed):
+                    time.sleep(0.1)
+
                 try:
+                    variants_data = [{
+                        'product_id': product_id,
+                        'variant_id': v['shopify_variant_id'],
+                        'cost': v['new_price'],
+                        'queue_id': v['queue_id']
+                    } for v in variants]
+
                     results = self.shopify.bulk_price_update(
-                        variants, 
+                        variants_data,
                         margin=margin,
                         discount=discount
                     )
-                    
-                    # Actualizar estado en la cola
-                    for variant in variants:
-                        status = 'completed' if results.get(str(variant['variant_id'])) else 'error'
-                        logger.info(f"Actualizando estado de variante {variant['variant_id']} a {status}")
-                        
-                        self.db.execute(text("""
-                            UPDATE price_updates_queue
-                            SET status = :status, 
-                                processed_at = CURRENT_TIMESTAMP
-                            WHERE id = :queue_id
-                        """), {
-                            'status': status, 
-                            'queue_id': variant['queue_id']
-                        })
-                    
-                    self.db.commit()
-                    time.sleep(1)  # Rate limiting entre productos
+
+                    # Actualizar puntos usados
+                    self.points_used += points_needed
+
+                    # Actualizar estados en la cola
+                    self.update_price_queue_status(variants, results)
                     
                 except Exception as e:
-                    logger.error(f"Error procesando actualización de precios para producto {product_id}: {str(e)}")
-                    self.db.rollback()
+                    logger.error(f"Error procesando producto {product_id}: {str(e)}")
 
         except Exception as e:
-            logger.error(f"Error en proceso de actualización de precios: {str(e)}")
+            logger.error(f"Error en proceso de precios: {str(e)}")
 
     def process_stock_updates(self):
-        """Procesa la cola de actualizaciones de stock"""
+        """Procesa la cola de actualizaciones de stock de forma optimizada"""
         try:
             pending_updates = self.get_pending_stock_updates()
             if not pending_updates:
                 return
 
-            # Como las actualizaciones de stock son individuales, procesamos con más cuidado
+            # Procesar en lotes para optimizar
             for update in pending_updates:
+                # Cada actualización de stock consume 10 puntos
+                while not self.can_use_points(10):
+                    time.sleep(0.1)
+
                 try:
-                    queue_id = update['queue_id']  # Guardamos el queue_id antes del update
                     success = self.shopify.update_inventory_quantity(
                         inventory_item_id=update['inventory_item_id'],
                         location_id=os.getenv('SHOPIFY_LOCATION_ID'),
                         desired_quantity=update['new_stock']
                     )
 
-                    # Actualizar estado usando queue_id
-                    status = 'completed' if success else 'error'
-                    self.db.execute(text("""
-                        UPDATE stock_updates_queue
-                        SET status = :status,
-                            processed_at = CURRENT_TIMESTAMP
-                        WHERE id = :queue_id
-                    """), {'status': status, 'queue_id': queue_id})
-                    
-                    self.db.commit()
-                    time.sleep(0.5)  # Rate limiting entre actualizaciones
-                    
+                    # Actualizar puntos usados
+                    self.points_used += 10
+
+                    # Actualizar estado
+                    self.update_stock_queue_status(update['queue_id'], success)
+
                 except Exception as e:
-                    logger.error(f"Error procesando stock para item {update.get('inventory_item_id')}: {str(e)}")
-                    self.db.rollback()
+                    logger.error(f"Error procesando stock para {update['inventory_item_id']}: {str(e)}")
 
         except Exception as e:
-            logger.error(f"Error en proceso de actualización de stock: {str(e)}")
+            logger.error(f"Error en proceso de stock: {str(e)}")
+
+    def update_price_queue_status(self, variants: List[Dict], results: Dict):
+        """Actualiza el estado de múltiples registros de precio"""
+        try:
+            for variant in variants:
+                status = 'completed' if results.get(str(variant['shopify_variant_id'])) else 'error'
+                self.db.execute(text("""
+                    UPDATE price_updates_queue
+                    SET status = :status, 
+                        processed_at = CURRENT_TIMESTAMP
+                    WHERE id = :queue_id
+                """), {
+                    'status': status,
+                    'queue_id': variant['queue_id']
+                })
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"Error actualizando estados de precio: {str(e)}")
+            self.db.rollback()
+
+    def update_stock_queue_status(self, queue_id: int, success: bool):
+        """Actualiza el estado de un registro de stock"""
+        try:
+            status = 'completed' if success else 'error'
+            self.db.execute(text("""
+                UPDATE stock_updates_queue
+                SET status = :status,
+                    processed_at = CURRENT_TIMESTAMP
+                WHERE id = :queue_id
+            """), {'status': status, 'queue_id': queue_id})
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"Error actualizando estado de stock: {str(e)}")
+            self.db.rollback()
+
+    def get_queue_stats(self) -> Dict:
+        """Obtiene estadísticas de las colas"""
+        try:
+            stats = {
+                'pending_price': 0,
+                'error_price': 0,
+                'completed_price': 0,
+                'pending_stock': 0,
+                'error_stock': 0,
+                'completed_stock': 0
+            }
+            
+            # Estadísticas de precio
+            price_result = self.db.execute(text("""
+                SELECT status, COUNT(*) as count
+                FROM price_updates_queue
+                GROUP BY status
+            """))
+            for row in price_result:
+                status = row[0]
+                if status == 'pending':
+                    stats['pending_price'] = row[1]
+                elif status == 'error':
+                    stats['error_price'] = row[1]
+                elif status == 'completed':
+                    stats['completed_price'] = row[1]
+            
+            # Estadísticas de stock
+            stock_result = self.db.execute(text("""
+                SELECT status, COUNT(*) as count
+                FROM stock_updates_queue
+                GROUP BY status
+            """))
+            for row in stock_result:
+                status = row[0]
+                if status == 'pending':
+                    stats['pending_stock'] = row[1]
+                elif status == 'error':
+                    stats['error_stock'] = row[1]
+                elif status == 'completed':
+                    stats['completed_stock'] = row[1]
+            
+            return stats
+                
+        except Exception as e:
+            logger.error(f"Error obteniendo estadísticas: {str(e)}")
+            return {
+                'pending_price': 0,
+                'error_price': 0,
+                'completed_price': 0,
+                'pending_stock': 0,
+                'error_stock': 0,
+                'completed_stock': 0
+            }
 
     def process_queues(self, process_type='all'):
-        """
-        Procesa las colas según el tipo especificado
-        Args:
-            process_type: 'all', 'prices', 'stock'
-        """
+        """Procesa las colas según el tipo especificado"""
         logger.setLevel(logging.WARNING)
         logging.getLogger('src.shopify.api').setLevel(logging.WARNING)
         
@@ -335,61 +423,6 @@ class QueueProcessor:
                 logger.error(f"Error: {str(e)}")
                 time.sleep(30)
 
-    def get_queue_stats(self) -> Dict:
-        """Obtiene estadísticas de las colas"""
-        try:
-            stats = {
-                'pending_price': 0,
-                'error_price': 0,
-                'completed_price': 0,
-                'pending_stock': 0,
-                'error_stock': 0,
-                'completed_stock': 0
-            }
-            
-            # Estadísticas de precio
-            price_result = self.db.execute(text("""
-                SELECT status, COUNT(*) as count
-                FROM price_updates_queue
-                GROUP BY status
-            """))
-            for row in price_result:
-                status = row[0]
-                if status == 'pending':
-                    stats['pending_price'] = row[1]
-                elif status == 'error':
-                    stats['error_price'] = row[1]
-                elif status == 'completed':
-                    stats['completed_price'] = row[1]
-            
-            # Estadísticas de stock
-            stock_result = self.db.execute(text("""
-                SELECT status, COUNT(*) as count
-                FROM stock_updates_queue
-                GROUP BY status
-            """))
-            for row in stock_result:
-                status = row[0]
-                if status == 'pending':
-                    stats['pending_stock'] = row[1]
-                elif status == 'error':
-                    stats['error_stock'] = row[1]
-                elif status == 'completed':
-                    stats['completed_stock'] = row[1]
-            
-            return stats
-                
-        except Exception as e:
-            logger.error(f"Error obteniendo estadísticas: {str(e)}")
-            return {
-                'pending_price': 0,
-                'error_price': 0,
-                'completed_price': 0,
-                'pending_stock': 0,
-                'error_stock': 0,
-                'completed_stock': 0
-            }
-
     def send_processing_summary(self, processed_price: int, processed_stock: int, stats: Dict):
         """Envía resumen del procesamiento por email"""
         if not self.email_sender:
@@ -429,6 +462,7 @@ class QueueProcessor:
             
         except Exception as e:
             logger.error(f"Error enviando resumen: {str(e)}")
+
 
 if __name__ == "__main__":
    load_dotenv()
