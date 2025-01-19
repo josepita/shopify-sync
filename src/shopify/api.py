@@ -385,3 +385,51 @@ class ShopifyAPI:
         except Exception as e:
             logger.error(f"Error en actualización masiva de precios: {str(e)}")
             return {str(update['variant_id']): False for update in variant_updates}
+        
+    def update_product_category(self, product_id: str, category_id: str) -> bool:
+        """
+        Actualiza la categoría de un producto en Shopify
+        Args:
+            product_id: ID del producto sin el prefijo gid://shopify/Product/
+            category_id: ID completo de la categoría (gid://shopify/TaxonomyCategory/...)
+        """
+        query = """
+        mutation productUpdate($input: ProductInput!) {
+          productUpdate(input: $input) {
+            product {
+              id
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+        """
+        
+        try:
+            variables = {
+                'input': {
+                    'id': f'gid://shopify/Product/{product_id}',
+                    'category': category_id
+                }
+            }
+            
+            logger.info(f"Actualizando categoría del producto {product_id}")
+            result = self._make_request(query, variables)
+            
+            if 'errors' in result:
+                logger.error(f"Error en la respuesta: {result['errors']}")
+                return False
+                
+            user_errors = result.get('productUpdate', {}).get('userErrors', [])
+            if user_errors:
+                logger.error(f"Errores actualizando producto {product_id}: {user_errors}")
+                return False
+                
+            logger.info(f"Producto {product_id} actualizado exitosamente")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error en la mutación de categoría para producto {product_id}: {str(e)}")
+            return False
