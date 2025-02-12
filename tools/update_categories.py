@@ -3,12 +3,10 @@ import os
 import sys
 import logging
 import argparse
+import time
 from typing import Dict, Optional
 import pandas as pd
 from dotenv import load_dotenv
-
-# SCRIPT PARA ACTUALIZAR CATEGORÍAS DE PRODUCTOS EN SHOPIFY
-# LEE EL CSV QUE SE LE INDIQUE, BUSCA CADA REFERENCIA EN LA BD Y ACTUALIZA LA CATEGORÍA EN SHOPIFY
 
 # Añadir el directorio raíz al path para poder importar los módulos
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +16,7 @@ from src.shopify.api import ShopifyAPI
 from sqlalchemy import text
 
 # Configurar logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
 # Mapeo de tipos a categorías de Shopify
@@ -75,15 +73,16 @@ class CategoryUpdater:
                 LIMIT 1
             """), {"sku": sku}).fetchone()
             
-            print(f"Buscando SKU {sku} -> {'Encontrado' if result else 'No encontrado'}")
-            if result:
-                print(f"Product ID: {result[0]}")
-                
             return result[0] if result else None
             
         except Exception as e:
-            print(f"Error buscando SKU {sku}: {str(e)}")
             return None
+
+    def _format_time(self, seconds: float) -> str:
+        """Formatea segundos en formato legible"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
 
     def process_updates(self):
         """
@@ -92,69 +91,98 @@ class CategoryUpdater:
         try:
             # Cargar CSV
             df = pd.read_csv(self.csv_path)
-            
-            # Asegurar que REFERENCIA es string y añadir ceros a la izquierda si es necesario
             df['REFERENCIA'] = df['REFERENCIA'].fillna('').astype(str).apply(lambda x: x.zfill(8))
+            df['TIPO'] = df['TIPO'].fillna('').str.upper()
             
             # Filtrar variantes
             df = df[~df['REFERENCIA'].str.contains('/', na=False)]
             df = df[df['REFERENCIA'] != '']
             
-            logger.info(f"Cargados {len(df)} productos del CSV")
+            total_refs = len(df)
             
-            print("\nProductos en CSV:")
-            for _, row in df.iterrows():
-                print(f"REFERENCIA: {row['REFERENCIA']}, TIPO: {row['TIPO']}")
-            print("")
+            # Lista para guardar las referencias no encontradas
+            not_found_refs = []
             
             # Contadores para estadísticas
             actualizados = 0
             no_encontrados = 0
             errores = 0
+            start_time = time.time()
+
+            # Resumen inicial
+            print("\n" + "="*50)
+            print("ACTUALIZACIÓN DE CATEGORÍAS")
+            print("="*50)
+            print(f"Referencias a procesar: {total_refs:,}")
+            print("="*50)
             
             # Procesar cada producto
-            for _, row in df.iterrows():
+            for index, row in df.iterrows():
                 sku = row['REFERENCIA']
                 tipo = row['TIPO'].strip().upper()
-                
-                print(f"\nProcesando SKU: {sku} (Tipo: {tipo})")
                 
                 # Buscar producto en BD
                 product_id = self.get_product_id_for_sku(sku)
                 if not product_id:
-                    print(f"SKU {sku} no encontrado en BD")
                     no_encontrados += 1
-                    continue
-                
-                # Obtener categoría de Shopify
-                category_id = TIPO_TO_CATEGORY.get(tipo)
-                if not category_id:
-                    print(f"Tipo no reconocido en mapeo: '{tipo}'")
-                    errores += 1
-                    continue
-                
-                print(f"Intentando actualizar SKU {sku} con categoría {category_id}")
-                
-                # Actualizar categoría
-                if self.shopify.update_product_category(product_id, category_id):
-                    actualizados += 1
-                    logger.info(f"✓ Actualizado: {sku} -> {tipo}")
+                    # Guardar la fila completa para las referencias no encontradas
+                    not_found_refs.append(row)
                 else:
-                    errores += 1
+                    # Obtener categoría
+                    category_id = TIPO_TO_CATEGORY.get(tipo)
+                    if not category_id:
+                        errores += 1
+                        continue
+                    
+                    # Actualizar categoría
+                    if self.shopify.update_product_category(product_id, category_id):
+                        actualizados += 1
+                    else:
+                        errores += 1
 
-            # Mostrar resumen final
-            logger.info("\n" + "="*50)
-            logger.info("RESUMEN DE ACTUALIZACIÓN")
-            logger.info("="*50)
-            logger.info(f"Total productos: {len(df)}")
-            logger.info(f"No encontrados en BD: {no_encontrados}")
-            logger.info(f"Actualizaciones exitosas: {actualizados}")
+                # Mostrar progreso
+                processed = index + 1
+                elapsed = time.time() - start_time
+                items_per_second = processed / elapsed if elapsed > 0 else 0
+                remaining = total_refs - processed
+                eta = remaining / items_per_second if items_per_second > 0 else 0
+
+                print(
+                    f"\rProcesando {processed:,}/{total_refs:,} ({processed/total_refs*100:.1f}%) - "
+                    f"Actualizados: {actualizados:,} - "
+                    f"No encontrados: {no_encontrados:,} - "
+                    f"Errores: {errores:,} - "
+                    f"Tiempo restante: {self._format_time(eta)}",
+                    end="",
+                    flush=True
+                )
+
+            # Guardar referencias no encontradas en CSV
+            if not_found_refs:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                not_found_file = f'data/not_found_references_{timestamp}.csv'
+                not_found_df = pd.DataFrame(not_found_refs)
+                not_found_df.to_csv(not_found_file, index=False)
+
+            total_time = time.time() - start_time
+
+            # Resumen final
+            print("\n\n" + "="*50)
+            print("RESUMEN FINAL")
+            print("="*50)
+            print(f"Referencias procesadas: {total_refs:,}")
+            print(f"Actualizados exitosamente: {actualizados:,}")
+            print(f"No encontrados en BD: {no_encontrados:,}")
             if errores > 0:
-                logger.info(f"Errores: {errores}")
-            logger.info("="*50)
+                print(f"Errores: {errores:,}")
+            if no_encontrados > 0:
+                print(f"Referencias no encontradas guardadas en: {not_found_file}")
+            print(f"Tiempo total: {self._format_time(total_time)}")
+            print(f"Velocidad media: {total_refs/total_time:.1f} productos/s")
+            print("="*50)
 
         except Exception as e:
-            logger.error(f"Error en el proceso de actualización: {str(e)}")
+            print(f"\nError en el proceso: {str(e)}")
             raise
 
 def main():
@@ -165,14 +193,6 @@ def main():
         help='Ruta al archivo CSV con los datos de productos'
     )
     args = parser.parse_args()
-
-    # Configurar logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(message)s'
-    )
-    # Silenciar logs de bajo nivel
-    logging.getLogger('urllib3.connectionpool').setLevel(logging.ERROR)
 
     # Cargar variables de entorno
     load_dotenv()
@@ -188,4 +208,4 @@ def main():
     updater.process_updates()
 
 if __name__ == "__main__":
-    main()
+    main()  

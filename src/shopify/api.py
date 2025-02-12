@@ -20,42 +20,69 @@ class ShopifyAPI:
             'Content-Type': 'application/json'
         }
         self.last_request_time = 0
-        self.min_request_interval = 0.5
-
+        self.min_request_interval = 0.1  # Reducido para no interferir con el QueueProcessor
+        self.current_retry = 0
+        self.max_retries = 3
+        self.retry_after = 0
 
     def _handle_rate_limit(self):
-        """Maneja el rate limiting para no exceder los límites de la API"""
+        """
+        Maneja el rate limiting para no exceder los límites de la API
+        Solo interviene activamente cuando Shopify indica problemas
+        """
         current_time = time.time()
+
+        # Si hay un Retry-After explícito, usarlo
+        if self.retry_after > 0:
+            time.sleep(self.retry_after)
+            self.retry_after = 0
+            return
+
+        # Intervalo base mínimo
         time_since_last_request = current_time - self.last_request_time
         if time_since_last_request < self.min_request_interval:
             time.sleep(self.min_request_interval - time_since_last_request)
+
         self.last_request_time = time.time()
 
     def _make_request(self, query: str, variables: Dict = None) -> Dict:
         """
         Realiza una petición GraphQL a Shopify
         """
-        self._handle_rate_limit()
-        try:
-            response = requests.post(
-                self.endpoint,
-                headers=self.headers,
-                json={'query': query, 'variables': variables or {}}
-            )
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            if 'errors' in data:
-                errors = data['errors']
-                logger.error(f"GraphQL errors: {errors}")
-                raise Exception(errors[0]['message'])
+        while True:
+            self._handle_rate_limit()
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    headers=self.headers,
+                    json={'query': query, 'variables': variables or {}}
+                )
+
+                # Solo manejar rate limits si Shopify indica problemas
+                if response.status_code == 429:
+                    self.current_retry += 1
+                    if self.current_retry > self.max_retries:
+                        raise Exception("Máximo número de reintentos excedido")
+                    self.retry_after = float(response.headers.get('Retry-After', 5))
+                    logger.warning(f"Rate limit excedido, esperando {self.retry_after} segundos")
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
                 
-            return data.get('data', {})
-            
-        except Exception as e:
-            logger.error(f"Error en petición GraphQL: {str(e)}")
-            raise
+                # Resetear contadores si la petición fue exitosa
+                self.current_retry = 0
+                
+                if 'errors' in data:
+                    errors = data['errors']
+                    logger.error(f"GraphQL errors: {errors}")
+                    raise Exception(errors[0]['message'])
+                    
+                return data.get('data', {})
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error en petición GraphQL: {str(e)}")
+                raise
 
     def get_inventory_item_by_sku(self, sku: str):
         query = """
@@ -415,21 +442,16 @@ class ShopifyAPI:
                 }
             }
             
-            logger.info(f"Actualizando categoría del producto {product_id}")
             result = self._make_request(query, variables)
             
             if 'errors' in result:
-                logger.error(f"Error en la respuesta: {result['errors']}")
                 return False
                 
             user_errors = result.get('productUpdate', {}).get('userErrors', [])
             if user_errors:
-                logger.error(f"Errores actualizando producto {product_id}: {user_errors}")
                 return False
                 
-            logger.info(f"Producto {product_id} actualizado exitosamente")
             return True
             
         except Exception as e:
-            logger.error(f"Error en la mutación de categoría para producto {product_id}: {str(e)}")
             return False

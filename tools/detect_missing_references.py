@@ -14,12 +14,7 @@ El script:
 3. Genera un archivo CSV con los registros completos de las referencias faltantes
 4. Muestra un resumen por pantalla agrupado por TIPO de producto
 
-Uso:
-    python tools/find_unsynchronized_skus.py --csv ruta/al/archivo.csv
-
-Salida:
-    - Genera un archivo CSV en data/missing_references_[timestamp].csv
-    - Muestra un resumen por pantalla con estadísticas
+Se puede filtrar por un tipo específico de producto usando --tipo
 """
 
 import os
@@ -42,9 +37,10 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 class ReferenceFinder:
-    def __init__(self, csv_path: str):
+    def __init__(self, csv_path: str, tipo: str = None):
         self.db = next(get_db())
         self.csv_path = csv_path
+        self.tipo = tipo.upper() if tipo else None
 
     def get_db_references(self) -> Set[str]:
         """
@@ -75,6 +71,15 @@ class ReferenceFinder:
             # Cargar CSV
             df = pd.read_csv(self.csv_path)
             df['REFERENCIA'] = df['REFERENCIA'].fillna('').astype(str)
+            df['TIPO'] = df['TIPO'].fillna('').str.upper()
+            
+            # Filtrar por tipo si se especificó
+            if self.tipo:
+                df = df[df['TIPO'] == self.tipo]
+                if len(df) == 0:
+                    logger.error(f"No se encontraron productos del tipo: {self.tipo}")
+                    return
+                
             total_refs = len(df)
             
             # Obtener referencias de BD
@@ -90,24 +95,34 @@ class ReferenceFinder:
             missing_by_type.columns = ['TIPO', 'CANTIDAD']
             missing_by_type = missing_by_type.sort_values('CANTIDAD', ascending=False)
             
-            # Guardar faltantes en CSV
+            # Generar nombre de archivo
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_file = f'data/missing_references_{timestamp}.csv'
+            tipo_str = f"_{self.tipo.lower()}" if self.tipo else ""
+            output_file = f'data/missing_references{tipo_str}_{timestamp}.csv'
+            
+            # Guardar faltantes en CSV
             missing_df.drop('exists_in_db', axis=1).to_csv(output_file, index=False)
             
             # Mostrar resumen
             total_missing = len(missing_df)
             logger.info("\n" + "="*50)
-            logger.info("RESUMEN DE REFERENCIAS FALTANTES")
+            if self.tipo:
+                logger.info(f"RESUMEN DE REFERENCIAS FALTANTES - TIPO: {self.tipo}")
+            else:
+                logger.info("RESUMEN DE REFERENCIAS FALTANTES")
             logger.info("="*50)
-            logger.info(f"Total referencias en CSV: {total_refs:,}")
+            logger.info(f"Total referencias analizadas: {total_refs:,}")
             logger.info(f"Total referencias faltantes: {total_missing:,}")
-            logger.info(f"Porcentaje faltante: {(total_missing/total_refs*100):.1f}%")
-            logger.info("\nDesglose por tipo:")
-            logger.info("-" * 40)
-            for _, row in missing_by_type.iterrows():
-                logger.info(f"{row['TIPO']}: {row['CANTIDAD']:,}")
-            logger.info("-" * 40)
+            if total_refs > 0:
+                logger.info(f"Porcentaje faltante: {(total_missing/total_refs*100):.1f}%")
+            
+            if not self.tipo:
+                logger.info("\nDesglose por tipo:")
+                logger.info("-" * 40)
+                for _, row in missing_by_type.iterrows():
+                    logger.info(f"{row['TIPO']}: {row['CANTIDAD']:,}")
+                logger.info("-" * 40)
+            
             logger.info(f"\nArchivo generado: {output_file}")
             logger.info("="*50)
 
@@ -122,7 +137,8 @@ def main():
         epilog="""
 Ejemplos:
   %(prog)s --csv data/catalogo.csv
-  %(prog)s --csv data/csv_archive/catalogo_20240119.csv
+  %(prog)s --csv data/catalogo.csv --tipo PENDIENTES
+  %(prog)s --csv data/csv_archive/catalogo_20240119.csv --tipo PULSERA
         """
     )
     parser.add_argument(
@@ -130,13 +146,17 @@ Ejemplos:
         required=True,
         help='Ruta al archivo CSV con los datos de productos'
     )
+    parser.add_argument(
+        '--tipo',
+        help='Filtrar por un tipo específico de producto'
+    )
     args = parser.parse_args()
 
     # Cargar variables de entorno
     load_dotenv()
 
     # Ejecutar búsqueda
-    finder = ReferenceFinder(args.csv)
+    finder = ReferenceFinder(args.csv, args.tipo)
     finder.find_missing_references()
 
 if __name__ == "__main__":
