@@ -2,6 +2,7 @@
 
 Sistema de sincronización automática de catálogo entre proveedor y Shopify.
 
+ 
 ## Descripción
 
 El sistema descarga diariamente un catálogo en formato CSV/HTML desde el proveedor, procesa los cambios de precio y stock, y los sincroniza con una tienda Shopify usando la Admin API.
