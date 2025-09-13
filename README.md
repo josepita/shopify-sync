@@ -233,6 +233,7 @@ Pasos:
   - `SELECT COUNT(*) FROM product_mappings;`
   - `SELECT COUNT(*) FROM variant_mappings;`
 - Si hay referencias no encontradas, revisa que el SKU en Shopify coincida con `REFERENCIA` del CSV o crea los productos faltantes.
+  - Se genera un reporte: `data/not_found_skus_YYYYMMDD_HHMMSS.csv`
 
 ## Dependencias principales
 
@@ -255,3 +256,4 @@ Se recomienda configurar un cron job para la ejecución diaria:
   - Usa la URL configurada en `src/database/connection.py`.
 - Mapeado inicial: `python tools/build_initial_mappings.py`
   - Escanea SKUs del CSV, consulta Shopify y crea/actualiza mapeos en BD.
+  - Genera `data/not_found_skus_*.csv` con las referencias no encontradas en Shopify.

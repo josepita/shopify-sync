@@ -4,6 +4,7 @@ import sys
 import logging
 from typing import Optional
 import pandas as pd
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -102,6 +103,7 @@ def build_initial_mappings():
     processed = 0
     found = 0
     not_found = 0
+    not_found_rows = []
 
     logger.info(f"Iniciando mapeado inicial para {total} referencias del CSV")
 
@@ -135,6 +137,8 @@ def build_initial_mappings():
                 found += 1
             else:
                 not_found += 1
+                # guardar fila original para reporte
+                not_found_rows.append(row.to_dict())
 
             processed += 1
             if processed % 200 == 0 or processed == total:
@@ -146,6 +150,14 @@ def build_initial_mappings():
         db.commit()
         logger.info("Mapeado inicial completado.")
         logger.info(f"Encontrados: {found:,} – No encontrados: {not_found:,}")
+
+        # Exportar no encontrados si los hay
+        if not_found_rows:
+            os.makedirs('data', exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = os.path.join('data', f'not_found_skus_{timestamp}.csv')
+            pd.DataFrame(not_found_rows).to_csv(output_file, index=False)
+            logger.warning(f"No encontrados exportados a: {output_file}")
         if not_found > 0:
             logger.warning("Algunas referencias no se encontraron por SKU en Shopify. Revisa SKUs o crea productos.")
         return 0
@@ -158,4 +170,3 @@ def build_initial_mappings():
 
 if __name__ == '__main__':
     sys.exit(build_initial_mappings())
-
