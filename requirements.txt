@@ -1,4 +1,8 @@
 sqlalchemy==2.0.23
 python-dotenv==1.0.0
 mysql-connector-python==8.0.33
+# Compat Python 3.12: pandas 2.0.3 requiere NumPy 1.x
+numpy==1.26.4
 pandas==2.0.3
+requests==2.31.0
+beautifulsoup4==4.12.3
