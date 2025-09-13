@@ -157,9 +157,12 @@ def build_initial_mappings():
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             output_file = os.path.join('data', f'not_found_skus_{timestamp}.csv')
             pd.DataFrame(not_found_rows).to_csv(output_file, index=False)
-            logger.warning(f"No encontrados exportados a: {output_file}")
+            logger.info(f"No encontrados exportados a: {output_file}")
         if not_found > 0:
-            logger.warning("Algunas referencias no se encontraron por SKU en Shopify. Revisa SKUs o crea productos.")
+            logger.info(
+                "Una parte del catálogo no existe en Shopify (esperado en primera carga). "
+                "Solo se mapearán los SKUs existentes; el resto queda en el reporte."
+            )
         return 0
 
     except Exception as e:

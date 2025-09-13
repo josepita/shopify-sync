@@ -234,6 +234,7 @@ Pasos:
   - `SELECT COUNT(*) FROM variant_mappings;`
 - Si hay referencias no encontradas, revisa que el SKU en Shopify coincida con `REFERENCIA` del CSV o crea los productos faltantes.
   - Se genera un reporte: `data/not_found_skus_YYYYMMDD_HHMMSS.csv`
+  - Nota: Es normal que muchos SKUs del CSV no existan en Shopify. El sistema mapea solo los encontrados y omite el resto.
 
 ## Dependencias principales
 
