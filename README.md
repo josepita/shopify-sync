@@ -190,12 +190,34 @@ SMTP_USER=email
 SMTP_PASSWORD=pass
 ALERT_EMAIL_RECIPIENT=email_alertas
 
-## Instalación
+## Puesta en marcha
 
-1. Clonar repositorio
-2. Instalar dependencias: `pip install -r requirements.txt`
-3. Configurar variables de entorno
-4. Ejecutar migraciones: `python scripts/run_migrations.py`
+Requisitos previos:
+- Python 3.10+
+- MariaDB/MySQL accesible y una base de datos creada (p. ej. `shopify_sync`)
+
+Pasos:
+- Crear y activar entorno virtual
+  - `python3 -m venv .venv && source .venv/bin/activate`
+- Instalar dependencias
+  - `pip install -r requirements.txt`
+- Configurar variables de entorno
+  - Copiar `.env.example` a `.env` y editar credenciales (`DB_*`, Shopify, email, CSV)
+- Crear base de datos (si no existe)
+  - En MariaDB: `CREATE DATABASE shopify_sync CHARACTER SET utf8mb4;`
+- Inicializar tablas
+  - Recomendado: `python tools/init_db.py`
+  - Alternativas:
+    - `python -c "from src.database.connection import engine, Base; Base.metadata.create_all(bind=engine)"`
+    - `python tests/test_connection.py` (prueba conexión y crea tablas)
+
+Ejecutar sincronización:
+- Normal: `python src/sync/catalog.py`
+- Forzada: `python src/sync/catalog.py --force`
+
+Notas:
+- La estructura `data/` y `data/csv_archive/` se crea automáticamente al ejecutar.
+- Los logs se guardan en `data/logs/` con rotación mensual.
 
 ## Dependencias principales
 
@@ -209,4 +231,10 @@ ALERT_EMAIL_RECIPIENT=email_alertas
 
 Se recomienda configurar un cron job para la ejecución diaria:
 
-0 6 * * * /ruta/python /ruta/src/sync/catalog.py >> /ruta/logs/sync.log 2>&1
+0 6 * * * /ruta/proyecto/.venv/bin/python /ruta/proyecto/src/sync/catalog.py >> /ruta/proyecto/data/logs/sync.log 2>&1
+
+## Utilidades
+
+- Inicializar base de datos: `python tools/init_db.py`
+  - Carga `.env`, prueba la conexión y crea todas las tablas definidas por los modelos.
+  - Usa la URL configurada en `src/database/connection.py`.

@@ -33,3 +33,7 @@ def get_db():
 
 # Asegurarse de que get_db está disponible para importar
 __all__ = ['engine', 'get_db', 'Base', 'SessionLocal']
+
+# Autoimportar modelos para registrar las tablas en Base.metadata
+# Evita tener que importar manualmente src.database.models antes de crear las tablas
+from . import models  # noqa: F401
