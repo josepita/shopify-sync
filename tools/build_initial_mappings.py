@@ -2,7 +2,7 @@
 import os
 import sys
 import logging
-from typing import Optional
+from typing import Optional, Set, Tuple
 import pandas as pd
 from datetime import datetime
 
@@ -98,6 +98,38 @@ def build_initial_mappings():
     df['REFERENCIA'] = df['REFERENCIA'].astype(str).str.strip()
     if 'PRECIO' in df.columns:
         df['PRECIO'] = pd.to_numeric(df['PRECIO'], errors='coerce')
+
+    # Deduplicar por seguridad y normalizar
+    df = df.drop_duplicates(subset=['REFERENCIA']).copy()
+
+    # Cargar estado actual para acelerar: procesar solo SKUs nuevos o con inventory_item_id NULL
+    try:
+        # Obtener todos los SKUs ya mapeados
+        existing_rows = db.execute(text("SELECT internal_sku, inventory_item_id FROM variant_mappings")).fetchall()
+        existing_skus: Set[str] = set()
+        missing_inventory_skus: Set[str] = set()
+        for sku, inventory_id in existing_rows:
+            if sku:
+                existing_skus.add(str(sku))
+                if inventory_id is None:
+                    missing_inventory_skus.add(str(sku))
+
+        csv_skus: Set[str] = set(df['REFERENCIA'].astype(str).str.strip().tolist())
+        new_skus = csv_skus - existing_skus
+        target_skus = new_skus.union(missing_inventory_skus)
+
+        before = len(df)
+        if target_skus:
+            df = df[df['REFERENCIA'].astype(str).str.strip().isin(target_skus)].copy()
+        after = len(df)
+        skipped = before - after
+        logger.info(
+            f"Filtro de aceleración: {after:,}/{before:,} filas a procesar | "
+            f"Nuevos: {len(new_skus):,} | Con inventory_item_id NULL: {len(missing_inventory_skus):,} | "
+            f"Omitidos (ya completos): {skipped:,}"
+        )
+    except Exception as e:
+        logger.warning(f"No se pudo aplicar filtro de aceleración, se procesará todo el CSV. Detalle: {str(e)}")
 
     total = len(df)
     processed = 0

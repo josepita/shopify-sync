@@ -16,11 +16,13 @@ from src.csv_processor.processor import CSVProcessor
 from src.database.queue_manager import QueueManager
 from src.utils.email import EmailSender
 
+logs_dir = os.path.join(os.getcwd(), 'logs')
+os.makedirs(logs_dir, exist_ok=True)
 logging.basicConfig(
   level=logging.INFO,
   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
   handlers=[
-      logging.FileHandler(f'/var/log/sync_catalog_{datetime.now().strftime("%Y%m%d")}.log'),
+      logging.FileHandler(os.path.join(logs_dir, f'sync_catalog_{datetime.now().strftime("%Y%m%d")}.log')),
       logging.StreamHandler()
   ]
 )

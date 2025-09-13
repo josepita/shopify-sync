@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, DECIMAL, BigInteger, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, DateTime, DECIMAL, BigInteger, ForeignKey, Enum, Date, Index
 from sqlalchemy.orm import relationship
 from .connection import Base
 
@@ -46,3 +46,29 @@ class StockUpdateQueue(Base):
     status = Column(Enum('pending', 'processing', 'completed', 'error'))
     created_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime)
+
+
+class PriceHistory(Base):
+    __tablename__ = 'price_history'
+
+    id = Column(Integer, primary_key=True)
+    reference = Column(String(255), nullable=False, index=True)
+    price = Column(DECIMAL(10, 2), nullable=False)
+    date = Column(Date, nullable=False, index=True)
+
+    __table_args__ = (
+        Index('price_history_ref_date_idx', 'reference', 'date'),
+    )
+
+
+class StockHistory(Base):
+    __tablename__ = 'stock_history'
+
+    id = Column(Integer, primary_key=True)
+    reference = Column(String(255), nullable=False, index=True)
+    stock = Column(Integer, nullable=False)
+    date = Column(Date, nullable=False, index=True)
+
+    __table_args__ = (
+        Index('stock_history_ref_date_idx', 'reference', 'date'),
+    )
