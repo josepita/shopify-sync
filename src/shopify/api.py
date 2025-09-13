@@ -100,6 +100,49 @@ class ShopifyAPI:
         items = result.get('inventoryItems', {}).get('edges', [])
         return items[0]['node'] if items else None   
 
+    def get_variant_info_by_sku(self, sku: str):
+        """
+        Busca por SKU y devuelve información de variante, producto e inventory item.
+        Returns dict con claves: variant_id, product_id, product_title, inventory_item_id
+        """
+        query = """
+        query($q: String!) {
+          inventoryItems(first: 1, query: $q) {
+            edges {
+              node {
+                id
+                variant {
+                  id
+                  title
+                  product {
+                    id
+                    title
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        try:
+            variables = { 'q': f"sku:'{sku}'" }
+            data = self._make_request(query, variables)
+            edges = data.get('inventoryItems', {}).get('edges', [])
+            if not edges:
+                return None
+            node = edges[0]['node']
+            variant = node.get('variant') or {}
+            product = (variant.get('product') or {})
+            return {
+                'inventory_item_id': node['id'].split('/')[-1] if node.get('id') else None,
+                'variant_id': variant.get('id').split('/')[-1] if variant.get('id') else None,
+                'product_id': product.get('id').split('/')[-1] if product.get('id') else None,
+                'product_title': product.get('title')
+            }
+        except Exception as e:
+            logger.error(f"Error buscando variante por SKU {sku}: {str(e)}")
+            return None
+
     def get_product(self, product_id: str) -> Optional[Dict[str, Any]]:
         """
         Obtiene la información detallada de un producto

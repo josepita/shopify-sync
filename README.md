@@ -219,6 +219,21 @@ Notas:
 - La estructura `data/` y `data/csv_archive/` se crea automáticamente al ejecutar.
 - Los logs se guardan en `data/logs/` con rotación mensual.
 
+## Mapeado inicial (imprescindible en primera vez)
+
+Objetivo: poblar `product_mappings` y `variant_mappings` a partir de los SKUs del CSV y los productos existentes en Shopify.
+
+Pasos:
+- Asegura que existe `data/current.csv` (si no, se descargará automáticamente):
+  - `python tools/build_initial_mappings.py`
+- El script busca cada `REFERENCIA` del CSV como SKU en Shopify y crea/actualiza:
+  - `product_mappings` (por referencia base, antes de `/` si aplica)
+  - `variant_mappings` (por SKU completo, con `shopify_variant_id`, `shopify_product_id` y `inventory_item_id`)
+- Revisa resultados en DB:
+  - `SELECT COUNT(*) FROM product_mappings;`
+  - `SELECT COUNT(*) FROM variant_mappings;`
+- Si hay referencias no encontradas, revisa que el SKU en Shopify coincida con `REFERENCIA` del CSV o crea los productos faltantes.
+
 ## Dependencias principales
 
 - SQLAlchemy
@@ -238,3 +253,5 @@ Se recomienda configurar un cron job para la ejecución diaria:
 - Inicializar base de datos: `python tools/init_db.py`
   - Carga `.env`, prueba la conexión y crea todas las tablas definidas por los modelos.
   - Usa la URL configurada en `src/database/connection.py`.
+- Mapeado inicial: `python tools/build_initial_mappings.py`
+  - Escanea SKUs del CSV, consulta Shopify y crea/actualiza mapeos en BD.
